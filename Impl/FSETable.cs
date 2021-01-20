@@ -45,65 +45,64 @@ namespace PureZSTD.Impl
 
         private void InitWithProbabilities(ReadOnlySpan<int> probabilities, int accuracy)
         {
-            _accuracy = accuracy;
+            if (probabilities.Length > MAX_SYMBOLS) 
+            {
+                throw new Error.OutOfRange(nameof(probabilities.Length));
+            }
+            if (accuracy > MAX_ACCURACY)
+            {
+                throw new Error.OutOfRange(nameof(accuracy));
+            }
+
             var tableSize = 1 << accuracy;
+            _accuracy = accuracy;
             Reserve(tableSize);
 
-            var negativeIndex = tableSize;
-            for (var i = 0; i < probabilities.Length; ++i)
+            Span<int> stateDesc = stackalloc int[MAX_SYMBOLS];
+            
+            var highThreshold = tableSize;
+            for (var s = 0; s < probabilities.Length; s++) 
             {
-                if (probabilities[i] >= 0)
+                if (probabilities[s] >= 0) 
+                {  
+                    continue;
+                }
+                highThreshold -= 1;
+                _symbol[highThreshold] = (byte)s;
+                stateDesc[s] = 1;
+            }
+
+            var step = (tableSize >> 1) + (tableSize >> 3) + 3;
+            var mask = tableSize - 1;
+            var pos = 0;
+            for (var s = 0; s < probabilities.Length; s++) 
+            {
+                if (probabilities[s] <= 0) 
                 {
                     continue;
                 }
-                negativeIndex -= 1;
-                _numBits[negativeIndex] = accuracy;
-                _symbol[negativeIndex] = (byte)i;
+                stateDesc[s] = probabilities[s];
+                for (var i = 0; i < probabilities[s]; i++)
+                {
+                    _symbol[pos] = (byte)s;
+                    do {
+                        pos += step;
+                        pos &= mask;
+                    } while (pos >= highThreshold);
+                }
             }
 
-            var position = 0;
-            for (var i = 0; i != probabilities.Length; ++i)
+            if (pos != 0) 
             {
-                if (probabilities[i] <= 0)
-                {
-                    continue;
-                }
-                var prob = probabilities[i];
-                for (var j = 0; j < prob; ++j)
-                {
-                    _symbol[position] = (byte)i;
-                    do
-                    {
-                        position += (tableSize >> 1) + (tableSize >> 3) + 3;
-                        position &= tableSize - 1;
-                    } while (position >= negativeIndex);
-                }
+                throw new Error.Corruption("pos != 0");
             }
 
-            // TODO: probabilities should be sorted?
-            var counter = new int[probabilities.Length];
-            for (int i = 0; i != negativeIndex; ++i)
+            for (var i = 0; i < tableSize; i++) 
             {
                 var symbol = _symbol[i];
-                var prob = probabilities[symbol];
-                var numSlices = 1 << (32 - BitOperations.LeadingZeroCount((uint)(prob - 1)));
-                var numDoubleSlices = numSlices - prob;
-                var sliceWidth = tableSize / numSlices;
-                var numBits = 32 - BitOperations.LeadingZeroCount((uint)sliceWidth);
-
-                var count = counter[symbol];
-                counter[symbol] += 1;
-                if (count < numDoubleSlices)
-                {
-                    var numSingleSlices = numDoubleSlices - prob;
-                    _baseLine[i] = (count * 2 - numSingleSlices) * sliceWidth;
-                    _numBits[i] = numBits;
-                }
-                else
-                {
-                    _baseLine[i] = (count - numDoubleSlices) * sliceWidth;
-                    _numBits[i] = numBits - 1;
-                }
+                var nextStateDesc = (ushort)stateDesc[symbol]++;
+                _numBits[i] = (byte)(accuracy - Utility.HighestBitSet(nextStateDesc));
+                _baseLine[i] = (nextStateDesc << _numBits[i]) - tableSize;
             }
         }
 
@@ -126,7 +125,7 @@ namespace PureZSTD.Impl
                 throw new Error.OutOfRange(nameof(accuracy));
             }
             var remaining = 1 << accuracy;
-            var frequencies = new int[256];
+            Span<int> frequencies = stackalloc int[MAX_SYMBOLS];
             var count = 0;
             while (remaining > 0 && count < MAX_SYMBOLS)
             {
@@ -159,7 +158,7 @@ namespace PureZSTD.Impl
                         repeat = reader.ReadBitsInt32(2);
                         repeatTotal += repeat;
                     }
-                    Array.Fill(frequencies, 0, count, repeatTotal);
+                    frequencies.Slice(count, repeatTotal).Fill(0);
                     count += repeatTotal;
                 }
             }
@@ -169,7 +168,7 @@ namespace PureZSTD.Impl
                 throw new Error.OutOfRange(nameof(remaining));
             }
 
-            InitWithProbabilities(new ReadOnlySpan<int>(frequencies, 0, count), accuracy);
+            InitWithProbabilities(frequencies.Slice(0, count), accuracy);
         }
 
         private static FSETable CreateDefault(ReadOnlySpan<int> probabilities, int accuracy)

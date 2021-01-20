@@ -54,8 +54,8 @@ namespace PureZSTD.Impl
             }
 
             _maxNumBits = 0;
-            var rankCount = new int[MAX_BITS + 1];
-            foreach (var weight in weights)
+            Span<int> rankCount = stackalloc int[MAX_BITS + 1];
+            foreach(var weight in weights)
             {
                 if (weight > MAX_BITS)
                 {
@@ -67,13 +67,13 @@ namespace PureZSTD.Impl
 
             var tableSize = 1 << _maxNumBits;
             Reserve(tableSize);
-            var rankIndex = new int[MAX_BITS + 1];
+            Span<int> rankIndex = stackalloc int[MAX_BITS + 1];
             for (int i = _maxNumBits; i >= 1; i--)
             {
                 var current = rankIndex[i];
                 var previous = current + rankCount[i] * (1 << (_maxNumBits - i));
                 rankIndex[i - 1] = previous;
-                Array.Fill(_numBits, i, rankIndex[i], previous - current);
+                Array.Fill(_numBits, i, current, previous - current);
             }
 
             if (rankIndex[0] != tableSize)
@@ -83,21 +83,22 @@ namespace PureZSTD.Impl
 
             for (int i = 0; i < weights.Length; ++i)
             {
-                if (weights[i] == 0)
+                var weight = weights[i];
+                if (weight == 0)
                 {
                     continue;
                 }
-                var code = rankIndex[weights[i]];
-                var len = 1 << (_maxNumBits - weights[i]);
+                var code = rankIndex[weight];
+                var len = 1 << (_maxNumBits - weight);
                 Array.Fill(_symbol, (byte)i, code, len);
-                rankIndex[weights[i]] += len;
+                rankIndex[weight] += len;
             }
         }
 
         public void InitFromRead(ref ByteReader reader)
         {
             var header = reader.ReadUInt8();
-            var weights = new int [MAX_SYMBOLS];
+            Span<int> weights = stackalloc int [MAX_SYMBOLS];
             var count = 0;
             if (header >= 128)
             {
@@ -121,12 +122,29 @@ namespace PureZSTD.Impl
                 var subReader = reader.SubReader(header);
                 _tmpTable.InitFromRead(ref subReader, MAX_ACCURACY);
                 var bitReader = subReader.SubReverseReader(subReader.Remaining);
-                count += FSEDecoder.DecompressInterleaved2(_tmpTable, ref bitReader, weights);
-            }
+                var decoder1 = new FSEDecoder(_tmpTable);
+                var decoder2 = new FSEDecoder(_tmpTable);
 
-            if (count >= MAX_SYMBOLS)
-            {
-                throw new Error.OutOfRange(nameof(count));
+                decoder1.InitState(ref bitReader);
+                decoder2.InitState(ref bitReader);
+                while (true)
+                {
+                    weights[count++] = decoder1.PeekState();
+                    decoder1.UpdateState(ref bitReader);
+                    if (bitReader.Position < 0)
+                    {
+                        weights[count++] = decoder2.PeekState();
+                        break;
+                    }
+
+                    weights[count++] = decoder2.PeekState();
+                    decoder2.UpdateState(ref bitReader);
+                    if (bitReader.Position < 0)
+                    {
+                        weights[count++] = decoder1.PeekState();
+                        break;
+                    }
+                }
             }
 
             var weightSum = 0;
@@ -155,7 +173,7 @@ namespace PureZSTD.Impl
             }
             weights[count++] = (maxBits + 1 - lastWeight);
 
-            InitWithWeights(new ReadOnlySpan<int>(weights, 0, count));
+            InitWithWeights(weights.Slice(0, count));
         }
     }
 }

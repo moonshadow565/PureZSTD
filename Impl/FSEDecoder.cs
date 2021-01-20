@@ -29,35 +29,5 @@ namespace PureZSTD.Impl
         {
             return Table.Peek(_state);
         }
-
-        public static int DecompressInterleaved2(FSETable table, ref BitReaderReverse bitReader, Span<int> output)
-        {
-            var count = 0;
-            var decoder1 = new FSEDecoder(table);
-            var decoder2 = new FSEDecoder(table);
-
-            decoder1.InitState(ref bitReader);
-            decoder2.InitState(ref bitReader);
-            while (true)
-            {
-                output[count++] = decoder1.PeekState();
-                decoder1.UpdateState(ref bitReader);
-                if (bitReader.Position < 0)
-                {
-                    output[count++] = decoder2.PeekState();
-                    break;
-                }
-
-                output[count++] = decoder2.PeekState();
-                decoder2.UpdateState(ref bitReader);
-                if (bitReader.Position < 0)
-                {
-                    output[count++] = decoder1.PeekState();
-                    break;
-                }
-            }
-
-            return count;
-        }
     }
 }
